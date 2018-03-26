@@ -1,0 +1,187 @@
+---
+title: "SF Crime Prediction"
+output: html_notebook
+---
+
+```{r}
+library(dplyr)
+data <- tbl_df(read.csv("/Users/aarthi/Downloads/codes/SF Crime/train.csv", header=TRUE))
+# number of observations for subset
+m = 8842 
+```
+
+```{r}
+# Discarding some variables
+data <- data[-c(3, 6, 7)]
+# Discarding outlier at Y = 90
+data <- data[data$Y != 90,]
+```
+
+```{r}
+library(lubridate) 
+# convert 'Dates' variable from factor to date type
+data$Dates = ymd_hms(data$Dates)
+# create new variable 'Year'
+data$Year = as.factor(year(data$Dates))
+# create new variable 'Month'
+data$Month = as.factor(month(data$Dates))
+# create new variable 'Day'
+data$Day = as.factor(day(data$Dates))
+# create new variable 'Hour'
+data$Hour = as.factor(hour(data$Dates))
+# remove the variable: 'Dates' after splitting it
+data = data[-1]
+```
+
+```{r}
+# create sample observation 
+makeSample <- function(m, seed = 999){  
+  set.seed(seed)
+  sample_entries <- sample( 1 : nrow(data), size = m, replace = FALSE )
+  subset <- data[sample_entries,]
+  subset
+  }
+
+temp.data = makeSample(500)
+plot(temp.data$X, temp.data$Y, xlab = "logitude", ylab = "latitude")
+
+```
+
+
+
+```{r}
+# Supervised Model
+# using step AIC , we can see that the location variables and the intercept are used to predict properly
+
+full.model = glm(Category ~ ., data = temp.data, family = binomial)
+null.model = glm(Category ~ 1, data = temp.data, family = binomial)
+variable.selection = step(null.model, formula(full.model), direction = "forward")
+variable.selection[1]
+```
+```{r}
+install.packages("data.table", dependencies=TRUE)
+```
+
+```{r}
+# Logistic regression
+# Split the data in '7:3' ratio for training and testing respectively. 
+# 'proc.time()' function is used to evalute the efficiency of the model. 
+
+library(nnet)
+
+crime = makeSample(m, seed = 33)
+
+# split for training, validation and test set
+split.train <- round(0.7 * m)                 # training set ends here
+crime.train <- crime[1 : split.train,]        # training set (70% of data)
+crime.test <- crime[(split.train + 1) : m,]   # test set (rest 30% of data)
+
+# logistic regression model
+log.time <- proc.time()
+log.model <- multinom(formula = Category ~ DayOfWeek + Month +
+                                X + Y + X ^ 2 + Y ^ 2, 
+                                maxit = 1000,
+                                Hessian = FALSE, 
+                                data = crime.train)
+log.time <- proc.time() - log.time
+log.result <- predict(log.model, crime.test[, -1]) # prediction on test data
+log.accuracy <- sum(log.result == t(crime.test[, -1])) # checking for out-of-sample performance
+
+cat("The model took ", log.time[3], " seconds to generate\n",
+    "Out of ", dim(crime.test)[1], " test cases, it got", log.accuracy ," right")
+
+```
+```{r}
+# Unsupervised
+
+# The two approaches used are principal component analysis in combination with k-means clustering. 
+# For meaningful visualisation, the levels of `Category` are further classified into 5 major groups. 
+
+library(data.table) # For data representation and manipulation
+temp = crime
+
+# handpick levels of `Category` and make a new group
+felony <- as.factor(unique(data$Category)[c(7, 8, 10, 14, 23, 26, 37)])
+personal <- as.factor(unique(data$Category)[c(3, 4, 15, 27, 33, 34)])
+misdemeanor <- as.factor(unique(data$Category)[c(5, 11, 13, 18, 19, 20, 21, 24, 30, 36)])
+offenses <- as.factor(unique(data$Category)[c(1, 9, 12, 16, 22, 28, 32, 37, 39 )])
+other <- as.factor(unique(data$Category)[c(2, 6, 17, 25, 29, 31, 35, 38)])
+
+temp = data.table(crime)
+# all the values of each group are transformed into the name of the group
+temp[Category %in% felony, newCategory := as.factor("felony") ]
+temp[Category %in% personal, newCategory := as.factor("personal") ]
+temp[Category %in% misdemeanor, newCategory := as.factor("misdemeanor") ]
+temp[Category %in% offenses, newCategory := as.factor("offenses") ]
+temp[Category %in% other, newCategory := as.factor("other") ]
+temp$newCategory = as.factor(temp$newCategory)
+
+few.color = rainbow(5)
+plot(temp$X, temp$Y,
+     col = few.color[temp$newCategory],
+     xlab = "logitude", ylab = "latitude")
+legend("topleft", as.character(unique(temp$newCategory)), 
+       pch = 1, col = few.color, cex = 0.55)
+summary(temp$newCategory)
+
+# PCA and K-means
+
+# preparing data for principal component analysis
+un.data = crime
+# feature scaling
+un.data$X = scale(un.data$X)
+un.data$Y = scale(un.data$Y)
+un.data$Year = scale(as.numeric(un.data$Year))
+un.data$Month = scale(as.numeric(un.data$Month))
+un.data$Day = scale(as.numeric(un.data$Day))
+un.data$Hour = scale(as.numeric(un.data$Hour))
+# splitting again
+un.train <- un.data[1 : split.train,]        # training set (70% of data)
+un.test <- un.data[(split.train + 1) : m,]   # test set (rest 30% of data)
+```
+
+```{r}
+install.packages('phyclust')
+```
+
+
+```{r}
+# For unsupervised analysis, first, the 5 new categories are mapped on a 2 dimensional space. 
+# Then clusters are generated and applied on the same 2 dimensional space on a different plot. 
+
+library(phyclust)
+# PCA requires numeric values 
+# As it turns out, preprocessed data from neural network can be easily used
+un.data = un.data[, 4:9]
+un.data$Category = temp$newCategory
+
+# Unsupervised models
+
+pca.model <- princomp(un.data[,1:6])
+clust.model <- kmeans(un.data[,1:6], centers = 5)
+
+# Space for 2 plots
+par(mfrow = c(2, 1),
+    oma = c(3, 0, 3, 0),
+    mar = c(1, 0, 0, 0))
+
+plot(pca.model$scores[, 1:2], type = "n", axes = FALSE)
+points(pca.model$scores[, 1:2],
+       col = few.color[un.data$Category])
+axis(3)
+mtext("Principal components with new categories",
+      side = 3, line = 2)
+
+plot(pca.model$scores[, 1:2], type = "n", axes = FALSE)
+points(pca.model$scores[, 1:2],
+       col = few.color[clust.model$cluster])
+axis(1)
+mtext("Principal components with clusters",
+      side = 1, line = 2)
+
+RRand(as.numeric(un.data$Category), clust.model$cluster)
+```
+
+
+
+
